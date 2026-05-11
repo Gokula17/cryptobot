@@ -26,7 +26,7 @@ MONTHLY_PRICE_SOL = 0.10
 FREE_USERS = [8294085828]
 
 # =====================================================
-# FLASK KEEP ALIVE (RENDER)
+# FLASK KEEP ALIVE
 # =====================================================
 
 app_web = Flask(__name__)
@@ -36,7 +36,7 @@ def home():
     return "BOT RUNNING"
 
 def run_web():
-    app_web.run(host="0.0.0.0", port=10000)
+    app_web.run(host="0.0.0.0", port=10000, debug=False, use_reloader=False)
 
 # =====================================================
 # DATABASE
@@ -74,8 +74,11 @@ def is_premium(user_id):
     if not result:
         return False
 
-    expiry = datetime.strptime(result[0], "%Y-%m-%d %H:%M:%S")
-    return expiry > datetime.now()
+    try:
+        expiry = datetime.strptime(result[0], "%Y-%m-%d %H:%M:%S")
+        return expiry > datetime.now()
+    except:
+        return False
 
 # =====================================================
 # ADD PREMIUM
@@ -139,7 +142,7 @@ VERIFY:
 """)
 
 # =====================================================
-# VERIFY PAYMENT (SAFE)
+# VERIFY PAYMENT
 # =====================================================
 
 async def verify(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -166,16 +169,18 @@ async def verify(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         data = r.json()
 
-        if not isinstance(data, dict) or "blockTime" not in data:
+        if not isinstance(data, dict):
             await update.message.reply_text("INVALID TX")
             return
 
         found = False
         paid = 0
 
-        for t in data.get("solTransfers", []):
+        transfers = data.get("solTransfers") or data.get("tokenTransfers") or []
+
+        for t in transfers:
             if t.get("destination") == SOL_WALLET:
-                amount = t.get("lamport", 0) / 1e9
+                amount = float(t.get("lamport", 0)) / 1e9
                 if amount >= MONTHLY_PRICE_SOL:
                     found = True
                     paid = amount
@@ -197,7 +202,7 @@ EXPIRES: {expiry}
 """)
 
     except Exception as e:
-        await update.message.reply_text(f"ERROR: {e}")
+        await update.message.reply_text(f"ERROR: {str(e)}")
 
 # =====================================================
 # MY PLAN
@@ -220,7 +225,7 @@ async def myplan(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"EXPIRES: {result[0]}")
 
 # =====================================================
-# PRICE CHECK (SAFE BINANCE)
+# PRICE CHECK
 # =====================================================
 
 async def price(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -240,17 +245,18 @@ async def price(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         data = r.json()
 
-        if "price" not in data:
+        price = data.get("price")
+        if not price:
             await update.message.reply_text("INVALID SYMBOL")
             return
 
-        await update.message.reply_text(f"{symbol}: {data['price']} USDT")
+        await update.message.reply_text(f"{symbol}: {price} USDT")
 
     except:
         await update.message.reply_text("API ERROR")
 
 # =====================================================
-# ALL COINS (NO CRASH VERSION)
+# ALL COINS
 # =====================================================
 
 async def all_coins(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -264,22 +270,20 @@ async def all_coins(update: Update, context: ContextTypes.DEFAULT_TYPE):
         r = requests.get("https://api.binance.com/api/v3/exchangeInfo", timeout=20)
         data = r.json()
 
-        if not isinstance(data, dict) or "symbols" not in data:
-            await update.message.reply_text("BINANCE ERROR")
-            return
+        symbols = data.get("symbols", [])
 
         coins = [
-            s["symbol"] for s in data["symbols"]
-            if s["symbol"].endswith("USDT")
+            s["symbol"] for s in symbols
+            if s.get("symbol", "").endswith("USDT")
         ]
 
         await update.message.reply_text("\n".join(coins[:100]))
 
     except Exception as e:
-        await update.message.reply_text(f"ERROR: {e}")
+        await update.message.reply_text(f"ERROR: {str(e)}")
 
 # =====================================================
-# MAIN (FIXED - NO SYNTAX BUG EVER)
+# MAIN
 # =====================================================
 
 def main():
@@ -296,17 +300,15 @@ def main():
     app.add_handler(CommandHandler("myid", myid))
     app.add_handler(CommandHandler("all", all_coins))
 
-    app.add_handler(
-        MessageHandler(filters.TEXT & ~filters.COMMAND, price)
-    )
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, price))
 
     print("BOT RUNNING...")
     app.run_polling()
 
 # =====================================================
-# RUN (SAFE RENDER VERSION)
+# RUN
 # =====================================================
 
 if __name__ == "__main__":
-    threading.Thread(target=run_web).start()
+    threading.Thread(target=run_web, daemon=True).start()
     main()
