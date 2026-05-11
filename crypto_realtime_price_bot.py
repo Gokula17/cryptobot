@@ -114,7 +114,7 @@ COMMANDS:
 /myid
 /all
 
-SEND:
+SEND SYMBOL:
 BTCUSDT
 ETHUSDT
 """)
@@ -169,14 +169,10 @@ async def verify(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         data = r.json()
 
-        if not isinstance(data, dict):
-            await update.message.reply_text("INVALID TX")
-            return
+        transfers = data.get("solTransfers", [])
 
         found = False
         paid = 0
-
-        transfers = data.get("solTransfers") or data.get("tokenTransfers") or []
 
         for t in transfers:
             if t.get("destination") == SOL_WALLET:
@@ -225,7 +221,7 @@ async def myplan(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"EXPIRES: {result[0]}")
 
 # =====================================================
-# PRICE CHECK
+# PRICE CHECK (SYMBOL)
 # =====================================================
 
 async def price(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -246,6 +242,7 @@ async def price(update: Update, context: ContextTypes.DEFAULT_TYPE):
         data = r.json()
 
         price = data.get("price")
+
         if not price:
             await update.message.reply_text("INVALID SYMBOL")
             return
@@ -256,7 +253,7 @@ async def price(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("API ERROR")
 
 # =====================================================
-# ALL COINS
+# ALL USDT PAIRS (FULL FIXED VERSION)
 # =====================================================
 
 async def all_coins(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -272,12 +269,24 @@ async def all_coins(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         symbols = data.get("symbols", [])
 
-        coins = [
-            s["symbol"] for s in symbols
-            if s.get("symbol", "").endswith("USDT")
+        usdt_pairs = [
+            s["symbol"]
+            for s in symbols
+            if s.get("symbol", "").endswith("USDT") and s.get("status") == "TRADING"
         ]
 
-        await update.message.reply_text("\n".join(coins[:100]))
+        if not usdt_pairs:
+            await update.message.reply_text("NO DATA FOUND")
+            return
+
+        await update.message.reply_text(f"TOTAL USDT PAIRS: {len(usdt_pairs)}")
+
+        # split into chunks (Telegram limit safe)
+        chunk_size = 70
+
+        for i in range(0, len(usdt_pairs), chunk_size):
+            chunk = usdt_pairs[i:i + chunk_size]
+            await update.message.reply_text("\n".join(chunk))
 
     except Exception as e:
         await update.message.reply_text(f"ERROR: {str(e)}")
@@ -300,7 +309,8 @@ def main():
     app.add_handler(CommandHandler("myid", myid))
     app.add_handler(CommandHandler("all", all_coins))
 
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, price))
+    # ONLY VALID SYMBOLS TRIGGER PRICE
+    app.add_handler(MessageHandler(filters.Regex("^[A-Z0-9]{6,15}$"), price))
 
     print("BOT RUNNING...")
     app.run_polling()
