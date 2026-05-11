@@ -2,9 +2,9 @@ import telebot
 import requests
 
 TOKEN = "8435427608:AAFPstc0KQfDWg-MK2DBXb6g_rVVNKwueN4"
-
 bot = telebot.TeleBot(TOKEN)
 
+# Start command
 @bot.message_handler(commands=['start'])
 def start(message):
     bot.reply_to(
@@ -12,27 +12,43 @@ def start(message):
         "Send coin symbol like BTC or ETH"
     )
 
-@bot.message_handler(func=lambda m: True)
-def price(message):
+# Price checker
+@bot.message_handler(func=lambda message: True)
+def get_price(message):
 
-    coin = message.text.lower()
+    try:
 
-    coins = {
-        "btc": "bitcoin",
-        "eth": "ethereum",
-        "sol": "solana"
-    }
+        text = message.text.upper()
 
-    if coin not in coins:
-        bot.reply_to(message, "Coin not supported")
-        return
+        coins = {
+            "BTC": "bitcoin",
+            "ETH": "ethereum",
+            "SOL": "solana"
+        }
 
-    url = f"https://api.coingecko.com/api/v3/simple/price?ids={coins[coin]}&vs_currencies=usd"
+        if text not in coins:
+            bot.reply_to(message, "Coin not supported")
+            return
 
-    data = requests.get(url).json()
+        coin_id = coins[text]
 
-    price = data[coins[coin]]["usd"]
+        url = f"https://api.coingecko.com/api/v3/simple/price?ids={coin_id}&vs_currencies=usd"
 
-    bot.reply_to(message, f"{coin.upper()} Price: ${price}")
+        response = requests.get(url)
+
+        data = response.json()
+
+        price = data[coin_id]["usd"]
+
+        bot.reply_to(
+            message,
+            f"{text} Price: ${price}"
+        )
+
+    except Exception as e:
+        print(e)
+        bot.reply_to(message, "Error getting price")
+
+print("Bot Started...")
 
 bot.infinity_polling()
