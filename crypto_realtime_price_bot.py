@@ -26,13 +26,11 @@ MONTHLY_PRICE_SOL = 0.10
 FREE_USERS = {8294085828}
 
 # =====================================================
-# SESSION
+# SESSION (IMPORTANT)
 # =====================================================
 
 session = requests.Session()
-session.headers.update({
-    "User-Agent": "Mozilla/5.0"
-})
+session.headers.update({"User-Agent": "Mozilla/5.0"})
 
 # =====================================================
 # FLASK KEEP ALIVE
@@ -113,7 +111,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         f"""WELCOME {user.first_name}
 
-📊 CRYPTO BOT (COINGECKO VERSION)
+📊 CRYPTO BOT (COINGECKO SAFE VERSION)
 
 COMMANDS:
 /premium
@@ -122,7 +120,7 @@ COMMANDS:
 /myid
 /all
 
-👉 Send symbol like:
+Send symbol:
 BTCUSDT
 ETHUSDT
 """
@@ -154,7 +152,7 @@ VERIFY:
     )
 
 # =====================================================
-# VERIFY PAYMENT (UNCHANGED)
+# VERIFY PAYMENT
 # =====================================================
 
 async def verify(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -203,7 +201,7 @@ async def verify(update: Update, context: ContextTypes.DEFAULT_TYPE):
         expiry = add_premium(user_id)
 
         await update.message.reply_text(
-            f"""✅ PAYMENT VERIFIED
+            f"""✅ VERIFIED
 AMOUNT: {amount_paid} SOL
 EXPIRES: {expiry}"""
         )
@@ -232,7 +230,7 @@ async def myplan(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"📅 Expires: {row[0]}")
 
 # =====================================================
-# PRICE (COINGECKO)
+# PRICE (COINGECKO SAFE)
 # =====================================================
 
 async def price(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -242,24 +240,16 @@ async def price(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Premium required")
         return
 
-    symbol = update.message.text.upper().strip().replace("USDT", "")
-
     try:
-        url = "https://api.coingecko.com/api/v3/simple/price"
+        symbol = update.message.text.upper().replace("USDT", "").strip()
 
-        params = {
-            "ids": "",
-            "vs_currencies": "usd"
-        }
-
-        # CoinGecko needs coin id, so we use search API
         search_url = f"https://api.coingecko.com/api/v3/search?query={symbol}"
         r = session.get(search_url, timeout=10)
         data = r.json()
 
         coins = data.get("coins", [])
 
-        if not coins:
+        if not isinstance(coins, list) or len(coins) == 0:
             await update.message.reply_text("❌ Coin not found")
             return
 
@@ -267,11 +257,12 @@ async def price(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         price_url = f"https://api.coingecko.com/api/v3/simple/price?ids={coin_id}&vs_currencies=usd"
         r2 = session.get(price_url, timeout=10)
+
         price_data = r2.json()
 
         price_val = price_data.get(coin_id, {}).get("usd")
 
-        if not price_val:
+        if price_val is None:
             await update.message.reply_text("❌ Price not found")
             return
 
@@ -281,7 +272,7 @@ async def price(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"Error: {str(e)}")
 
 # =====================================================
-# ALL COINS (COINGECKO)
+# ALL COINS (FIXED - NO SLICE BUG)
 # =====================================================
 
 CACHE = {"data": None, "time": None}
@@ -301,14 +292,29 @@ async def all_coins(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             url = "https://api.coingecko.com/api/v3/coins/list"
             r = session.get(url, timeout=20)
-            coins = r.json()
+
+            data = r.json()
+
+            # SAFE CHECK (FIX FOR slice error)
+            if not isinstance(data, list):
+                await update.message.reply_text("❌ API error")
+                return
+
+            coins = data
 
             CACHE["data"] = coins
             CACHE["time"] = now
 
-        symbols = [c["symbol"].upper() for c in coins[:1000]]
+        symbols = []
 
-        await update.message.reply_text(f"📊 Total Coins: {len(symbols)}")
+        for c in coins:
+            if isinstance(c, dict) and "symbol" in c:
+                symbols.append(c["symbol"].upper())
+
+            if len(symbols) >= 1000:
+                break
+
+        await update.message.reply_text(f"📊 Coins: {len(symbols)}")
 
         for i in range(0, len(symbols), 50):
             await update.message.reply_text("\n".join(symbols[i:i+50]))
@@ -336,7 +342,7 @@ def main():
 
     app.add_handler(MessageHandler(filters.Regex("^[A-Z0-9]{2,15}$"), price))
 
-    print("BOT RUNNING (COINGECKO MODE)")
+    print("BOT RUNNING (STABLE MODE)")
     app.run_polling()
 
 # =====================================================
