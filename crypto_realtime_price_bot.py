@@ -2,6 +2,7 @@ import os
 import requests
 import sqlite3
 import threading
+import time
 from datetime import datetime, timedelta
 from flask import Flask
 
@@ -26,7 +27,7 @@ MONTHLY_PRICE_SOL = 0.10
 FREE_USERS = {8294085828}
 
 # =====================================================
-# REQUEST SESSION
+# SESSION
 # =====================================================
 
 session = requests.Session()
@@ -64,7 +65,15 @@ CREATE TABLE IF NOT EXISTS premium_users (
 
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS used_transactions (
-    tx_hash TEXT PRIMARY KEY
+    tx_hash TEXT PRIMARY KEY,
+    user_id INTEGER
+)
+""")
+
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS verify_attempts (
+    user_id INTEGER PRIMARY KEY,
+    last_try INTEGER
 )
 """)
 
@@ -90,11 +99,23 @@ def is_premium(user_id: int):
         return False
 
 # =====================================================
-# ADD PREMIUM
+# ADD / EXTEND PREMIUM
 # =====================================================
 
 def add_premium(user_id: int):
-    expiry = datetime.now() + timedelta(days=30)
+    cursor.execute("SELECT expiry_date FROM premium_users WHERE user_id=?", (user_id,))
+    row = cursor.fetchone()
+
+    now = datetime.now()
+
+    if row:
+        try:
+            current = datetime.strptime(row[0], "%Y-%m-%d %H:%M:%S")
+            expiry = current + timedelta(days=30) if current > now else now + timedelta(days=30)
+        except:
+            expiry = now + timedelta(days=30)
+    else:
+        expiry = now + timedelta(days=30)
 
     cursor.execute("""
         INSERT OR REPLACE INTO premium_users (user_id, expiry_date)
@@ -125,8 +146,8 @@ COMMANDS:
 /majorcoins
 
 Send:
-BTCUSDT or BTC or btc
-ETHUSDT or ETH
+BTC / BTCUSDT / btc
+ETH / ETHUSDT
 """
     )
 
@@ -138,7 +159,7 @@ async def myid(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"Your ID: {update.effective_user.id}")
 
 # =====================================================
-# PREMIUM
+# PREMIUM INFO
 # =====================================================
 
 async def premium(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -154,63 +175,6 @@ VERIFY:
 /verify TX_HASH
 """
     )
-
-# =====================================================
-# VERIFY
-# =====================================================
-
-async def verify(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-
-    if not context.args:
-        await update.message.reply_text("Usage: /verify TX_HASH")
-        return
-
-    tx_hash = context.args[0]
-
-    cursor.execute("SELECT tx_hash FROM used_transactions WHERE tx_hash=?", (tx_hash,))
-    if cursor.fetchone():
-        await update.message.reply_text("❌ Already used TX")
-        return
-
-    try:
-        url = f"https://public-api.solscan.io/transaction/{tx_hash}"
-        r = session.get(url, timeout=15)
-
-        if r.status_code != 200:
-            await update.message.reply_text("❌ TX not found")
-            return
-
-        data = r.json()
-        transfers = data.get("solTransfers", [])
-
-        valid = False
-        amount_paid = 0
-
-        for t in transfers:
-            if t.get("destination") == SOL_WALLET:
-                amount_paid = float(t.get("lamport", 0)) / 1e9
-                if amount_paid >= MONTHLY_PRICE_SOL:
-                    valid = True
-                    break
-
-        if not valid:
-            await update.message.reply_text("❌ Payment insufficient")
-            return
-
-        cursor.execute("INSERT INTO used_transactions VALUES (?)", (tx_hash,))
-        conn.commit()
-
-        expiry = add_premium(user_id)
-
-        await update.message.reply_text(
-            f"""✅ VERIFIED
-AMOUNT: {amount_paid} SOL
-EXPIRES: {expiry}"""
-        )
-
-    except Exception as e:
-        await update.message.reply_text(f"Error: {str(e)}")
 
 # =====================================================
 # MY PLAN
@@ -233,7 +197,87 @@ async def myplan(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"📅 Expires: {row[0]}")
 
 # =====================================================
-# PRICE (SMART FIXED)
+# VERIFY (SECURED)
+# =====================================================
+
+async def verify(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+
+    if not context.args:
+        await update.message.reply_text("Usage: /verify TX_HASH")
+        return
+
+    tx_hash = context.args[0]
+
+    # anti spam cooldown
+    cursor.execute("SELECT last_try FROM verify_attempts WHERE user_id=?", (user_id,))
+    row = cursor.fetchone()
+
+    now = int(time.time())
+
+    if row and now - row[0] < 10:
+        await update.message.reply_text("⏳ Wait 10 seconds before retrying")
+        return
+
+    cursor.execute("""
+        INSERT OR REPLACE INTO verify_attempts (user_id, last_try)
+        VALUES (?, ?)
+    """, (user_id, now))
+    conn.commit()
+
+    # check TX reuse
+    cursor.execute("SELECT tx_hash FROM used_transactions WHERE tx_hash=?", (tx_hash,))
+    if cursor.fetchone():
+        await update.message.reply_text("❌ TX already used")
+        return
+
+    try:
+        url = f"https://public-api.solscan.io/transaction/{tx_hash}"
+        r = session.get(url, timeout=15)
+
+        if r.status_code != 200:
+            await update.message.reply_text("❌ TX not found")
+            return
+
+        data = r.json()
+        transfers = data.get("solTransfers", [])
+
+        valid = False
+        amount = 0
+
+        for t in transfers:
+            if t.get("destination") == SOL_WALLET:
+                amount = float(t.get("lamport", 0)) / 1e9
+                if amount >= MONTHLY_PRICE_SOL:
+                    valid = True
+                    break
+
+        if not valid:
+            await update.message.reply_text("❌ Payment invalid or insufficient")
+            return
+
+        # bind TX to user (security)
+        cursor.execute(
+            "INSERT INTO used_transactions (tx_hash, user_id) VALUES (?, ?)",
+            (tx_hash, user_id)
+        )
+        conn.commit()
+
+        expiry = add_premium(user_id)
+
+        await update.message.reply_text(
+            f"""✅ VERIFIED
+
+AMOUNT: {amount} SOL
+EXPIRES: {expiry}
+"""
+        )
+
+    except Exception as e:
+        await update.message.reply_text(f"Error: {str(e)}")
+
+# =====================================================
+# PRICE (SMART INPUT)
 # =====================================================
 
 async def price(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -247,15 +291,13 @@ async def price(update: Update, context: ContextTypes.DEFAULT_TYPE):
         symbol = update.message.text.upper().replace("/", "").strip()
 
         if not symbol.endswith("USDT"):
-            symbol = symbol + "USDT"
+            symbol += "USDT"
 
         url = f"https://data-api.binance.vision/api/v3/ticker/price?symbol={symbol}"
         r = session.get(url, timeout=8)
 
         if r.status_code == 200:
-            data = r.json()
-            price = data.get("price")
-
+            price = r.json().get("price")
             if price:
                 await update.message.reply_text(f"{symbol}: ${price}")
                 return
@@ -266,75 +308,55 @@ async def price(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"Error: {str(e)}")
 
 # =====================================================
-# /ALL PAIRS (NAMES ONLY)
+# ALL PAIRS
 # =====================================================
 
 async def all_pairs(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-
-    if not is_premium(user_id):
+    if not is_premium(update.effective_user.id):
         await update.message.reply_text("❌ Premium required")
         return
 
-    try:
-        url = "https://data-api.binance.vision/api/v3/ticker/price"
-        r = session.get(url, timeout=15)
+    r = session.get("https://data-api.binance.vision/api/v3/ticker/price")
+    data = r.json()
 
-        data = r.json()
+    pairs = [x["symbol"] for x in data if x["symbol"].endswith("USDT")]
 
-        usdt_pairs = [item["symbol"] for item in data if item["symbol"].endswith("USDT")]
+    msg = ""
+    parts = []
 
-        msg = ""
-        parts = []
-
-        for s in usdt_pairs:
-            if len(msg) + len(s) + 1 > 3800:
-                parts.append(msg)
-                msg = ""
-            msg += s + "\n"
-
-        if msg:
+    for s in pairs:
+        if len(msg) > 3500:
             parts.append(msg)
+            msg = ""
+        msg += s + "\n"
 
-        for p in parts[:10]:
-            await update.message.reply_text(p)
+    parts.append(msg)
 
-    except Exception as e:
-        await update.message.reply_text(f"Error: {str(e)}")
+    for p in parts[:5]:
+        await update.message.reply_text(p)
 
 # =====================================================
-# /MAJORCOINS
+# MAJOR COINS
 # =====================================================
 
 async def majorcoins(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-
-    if not is_premium(user_id):
+    if not is_premium(update.effective_user.id):
         await update.message.reply_text("❌ Premium required")
         return
 
-    try:
-        url = "https://data-api.binance.vision/api/v3/ticker/price"
-        r = session.get(url, timeout=15)
+    r = session.get("https://data-api.binance.vision/api/v3/ticker/price")
+    data = {i["symbol"]: i["price"] for i in r.json()}
 
-        data = r.json()
-        price_map = {i["symbol"]: i["price"] for i in data}
+    coins = ["BTCUSDT","ETHUSDT","BNBUSDT","SOLUSDT","XRPUSDT",
+             "ADAUSDT","DOGEUSDT","TRXUSDT","AVAXUSDT","LINKUSDT"]
 
-        major = [
-            "BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT",
-            "ADAUSDT", "DOGEUSDT", "TRXUSDT", "AVAXUSDT", "LINKUSDT"
-        ]
+    msg = "🔥 MAJOR COINS\n\n"
 
-        msg = "🔥 MAJOR COINS\n\n"
+    for c in coins:
+        if c in data:
+            msg += f"{c}: ${data[c]}\n"
 
-        for c in major:
-            if c in price_map:
-                msg += f"{c}: ${price_map[c]}\n"
-
-        await update.message.reply_text(msg)
-
-    except Exception as e:
-        await update.message.reply_text(f"Error: {str(e)}")
+    await update.message.reply_text(msg)
 
 # =====================================================
 # MAIN
@@ -355,7 +377,6 @@ def main():
     app.add_handler(CommandHandler("all", all_pairs))
     app.add_handler(CommandHandler("majorcoins", majorcoins))
 
-    # smart price input (BTC, btcusdt, /btc)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, price))
 
     print("BOT RUNNING")
