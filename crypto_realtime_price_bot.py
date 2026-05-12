@@ -26,7 +26,7 @@ MONTHLY_PRICE_SOL = 0.10
 FREE_USERS = {8294085828}
 
 # =====================================================
-# SESSION (IMPORTANT FIX)
+# SESSION
 # =====================================================
 
 session = requests.Session()
@@ -113,7 +113,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         f"""WELCOME {user.first_name}
 
-📊 CRYPTO BOT
+📊 CRYPTO BOT (COINGECKO VERSION)
 
 COMMANDS:
 /premium
@@ -154,7 +154,7 @@ VERIFY:
     )
 
 # =====================================================
-# VERIFY PAYMENT
+# VERIFY PAYMENT (UNCHANGED)
 # =====================================================
 
 async def verify(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -232,7 +232,7 @@ async def myplan(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"📅 Expires: {row[0]}")
 
 # =====================================================
-# PRICE CHECK
+# PRICE (COINGECKO)
 # =====================================================
 
 async def price(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -242,32 +242,49 @@ async def price(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Premium required")
         return
 
-    symbol = update.message.text.upper().strip()
+    symbol = update.message.text.upper().strip().replace("USDT", "")
 
     try:
-        url = f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}"
-        r = session.get(url, timeout=10)
+        url = "https://api.coingecko.com/api/v3/simple/price"
+
+        params = {
+            "ids": "",
+            "vs_currencies": "usd"
+        }
+
+        # CoinGecko needs coin id, so we use search API
+        search_url = f"https://api.coingecko.com/api/v3/search?query={symbol}"
+        r = session.get(search_url, timeout=10)
         data = r.json()
 
-        price_val = data.get("price")
+        coins = data.get("coins", [])
 
-        if not price_val:
-            await update.message.reply_text("❌ Invalid symbol")
+        if not coins:
+            await update.message.reply_text("❌ Coin not found")
             return
 
-        await update.message.reply_text(f"{symbol}: {price_val} USDT")
+        coin_id = coins[0]["id"]
 
-    except:
-        await update.message.reply_text("❌ Binance API error")
+        price_url = f"https://api.coingecko.com/api/v3/simple/price?ids={coin_id}&vs_currencies=usd"
+        r2 = session.get(price_url, timeout=10)
+        price_data = r2.json()
+
+        price_val = price_data.get(coin_id, {}).get("usd")
+
+        if not price_val:
+            await update.message.reply_text("❌ Price not found")
+            return
+
+        await update.message.reply_text(f"{symbol} : ${price_val}")
+
+    except Exception as e:
+        await update.message.reply_text(f"Error: {str(e)}")
 
 # =====================================================
-# /ALL FIXED VERSION (NO 0 BUG)
+# ALL COINS (COINGECKO)
 # =====================================================
 
-CACHE = {
-    "data": None,
-    "time": None
-}
+CACHE = {"data": None, "time": None}
 
 async def all_coins(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -280,34 +297,21 @@ async def all_coins(update: Update, context: ContextTypes.DEFAULT_TYPE):
         now = datetime.now()
 
         if CACHE["data"] and CACHE["time"] and (now - CACHE["time"]).seconds < 600:
-            symbols = CACHE["data"]
+            coins = CACHE["data"]
         else:
-            url = "https://api.binance.com/api/v3/exchangeInfo"
-
+            url = "https://api.coingecko.com/api/v3/coins/list"
             r = session.get(url, timeout=20)
+            coins = r.json()
 
-            if r.status_code != 200:
-                await update.message.reply_text(f"❌ Binance error: {r.status_code}")
-                return
-
-            data = r.json()
-
-            symbols = []
-            for s in data.get("symbols", []):
-                if s.get("status") == "TRADING" and s.get("symbol", "").endswith("USDT"):
-                    symbols.append(s["symbol"])
-
-            if not symbols:
-                await update.message.reply_text("❌ No USDT pairs found (API issue)")
-                return
-
-            CACHE["data"] = symbols
+            CACHE["data"] = coins
             CACHE["time"] = now
 
-        await update.message.reply_text(f"📊 Total USDT pairs: {len(symbols)}")
+        symbols = [c["symbol"].upper() for c in coins[:1000]]
+
+        await update.message.reply_text(f"📊 Total Coins: {len(symbols)}")
 
         for i in range(0, len(symbols), 50):
-            await update.message.reply_text("\n".join(symbols[i:i + 50]))
+            await update.message.reply_text("\n".join(symbols[i:i+50]))
 
     except Exception as e:
         await update.message.reply_text(f"Error: {str(e)}")
@@ -330,10 +334,9 @@ def main():
     app.add_handler(CommandHandler("myid", myid))
     app.add_handler(CommandHandler("all", all_coins))
 
-    # symbol handler LAST
-    app.add_handler(MessageHandler(filters.Regex("^[A-Z0-9]{6,15}$"), price))
+    app.add_handler(MessageHandler(filters.Regex("^[A-Z0-9]{2,15}$"), price))
 
-    print("BOT RUNNING...")
+    print("BOT RUNNING (COINGECKO MODE)")
     app.run_polling()
 
 # =====================================================
