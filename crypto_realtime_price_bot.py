@@ -26,7 +26,7 @@ MONTHLY_PRICE_SOL = 0.10
 FREE_USERS = {8294085828}
 
 # =====================================================
-# SESSION (IMPORTANT FOR RENDER)
+# REQUEST SESSION
 # =====================================================
 
 session = requests.Session()
@@ -114,17 +114,19 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         f"""WELCOME {user.first_name}
 
-📊 CRYPTO BOT (RENDER SAFE)
+📊 CRYPTO BOT
 
 COMMANDS:
 /premium
 /verify TX_HASH
 /myplan
 /myid
+/all
+/majorcoins
 
 Send:
-BTCUSDT
-ETHUSDT
+BTCUSDT or BTC or btc
+ETHUSDT or ETH
 """
     )
 
@@ -136,7 +138,7 @@ async def myid(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"Your ID: {update.effective_user.id}")
 
 # =====================================================
-# PREMIUM INFO
+# PREMIUM
 # =====================================================
 
 async def premium(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -154,7 +156,7 @@ VERIFY:
     )
 
 # =====================================================
-# VERIFY PAYMENT
+# VERIFY
 # =====================================================
 
 async def verify(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -180,7 +182,6 @@ async def verify(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         data = r.json()
-
         transfers = data.get("solTransfers", [])
 
         valid = False
@@ -232,7 +233,7 @@ async def myplan(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"📅 Expires: {row[0]}")
 
 # =====================================================
-# PRICE (RENDER SAFE HYBRID)
+# PRICE (SMART FIXED)
 # =====================================================
 
 async def price(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -243,36 +244,94 @@ async def price(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     try:
-        symbol = update.message.text.upper().strip()
+        symbol = update.message.text.upper().replace("/", "").strip()
 
-        # 1️⃣ TRY BINANCE MIRROR
+        if not symbol.endswith("USDT"):
+            symbol = symbol + "USDT"
+
         url = f"https://data-api.binance.vision/api/v3/ticker/price?symbol={symbol}"
         r = session.get(url, timeout=8)
 
         if r.status_code == 200:
             data = r.json()
             price = data.get("price")
+
             if price:
                 await update.message.reply_text(f"{symbol}: ${price}")
                 return
 
-        # 2️⃣ FALLBACK COINGECKO
-        coin = symbol.replace("USDT", "").lower()
+        await update.message.reply_text("❌ Invalid symbol")
 
-        cg = session.get(
-            f"https://api.coingecko.com/api/v3/simple/price?ids={coin}&vs_currencies=usd",
-            timeout=10
-        )
+    except Exception as e:
+        await update.message.reply_text(f"Error: {str(e)}")
 
-        cg_data = cg.json()
+# =====================================================
+# /ALL PAIRS (NAMES ONLY)
+# =====================================================
 
-        price = cg_data.get(coin, {}).get("usd")
+async def all_pairs(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
 
-        if not price:
-            await update.message.reply_text("❌ Price not found")
-            return
+    if not is_premium(user_id):
+        await update.message.reply_text("❌ Premium required")
+        return
 
-        await update.message.reply_text(f"{symbol}: ${price} (fallback)")
+    try:
+        url = "https://data-api.binance.vision/api/v3/ticker/price"
+        r = session.get(url, timeout=15)
+
+        data = r.json()
+
+        usdt_pairs = [item["symbol"] for item in data if item["symbol"].endswith("USDT")]
+
+        msg = ""
+        parts = []
+
+        for s in usdt_pairs:
+            if len(msg) + len(s) + 1 > 3800:
+                parts.append(msg)
+                msg = ""
+            msg += s + "\n"
+
+        if msg:
+            parts.append(msg)
+
+        for p in parts[:10]:
+            await update.message.reply_text(p)
+
+    except Exception as e:
+        await update.message.reply_text(f"Error: {str(e)}")
+
+# =====================================================
+# /MAJORCOINS
+# =====================================================
+
+async def majorcoins(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+
+    if not is_premium(user_id):
+        await update.message.reply_text("❌ Premium required")
+        return
+
+    try:
+        url = "https://data-api.binance.vision/api/v3/ticker/price"
+        r = session.get(url, timeout=15)
+
+        data = r.json()
+        price_map = {i["symbol"]: i["price"] for i in data}
+
+        major = [
+            "BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT",
+            "ADAUSDT", "DOGEUSDT", "TRXUSDT", "AVAXUSDT", "LINKUSDT"
+        ]
+
+        msg = "🔥 MAJOR COINS\n\n"
+
+        for c in major:
+            if c in price_map:
+                msg += f"{c}: ${price_map[c]}\n"
+
+        await update.message.reply_text(msg)
 
     except Exception as e:
         await update.message.reply_text(f"Error: {str(e)}")
@@ -293,11 +352,13 @@ def main():
     app.add_handler(CommandHandler("verify", verify))
     app.add_handler(CommandHandler("myplan", myplan))
     app.add_handler(CommandHandler("myid", myid))
+    app.add_handler(CommandHandler("all", all_pairs))
+    app.add_handler(CommandHandler("majorcoins", majorcoins))
 
-    # price handler
-    app.add_handler(MessageHandler(filters.Regex("^[A-Z0-9]{2,15}$"), price))
+    # smart price input (BTC, btcusdt, /btc)
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, price))
 
-    print("BOT RUNNING (RENDER SAFE)")
+    print("BOT RUNNING")
     app.run_polling()
 
 # =====================================================
