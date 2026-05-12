@@ -1,17 +1,17 @@
 import os
 import requests
 import sqlite3
+import threading
 from datetime import datetime, timedelta
 from flask import Flask
-import threading
 
 from telegram import Update
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
     MessageHandler,
-    filters,
     ContextTypes,
+    filters,
 )
 
 # =====================================================
@@ -23,7 +23,7 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 SOL_WALLET = "3KfYUxGhqNWQYWuP1QeF8ipnGxayqTeuhz3SJ8gw2oYi"
 MONTHLY_PRICE_SOL = 0.10
 
-FREE_USERS = [8294085828]
+FREE_USERS = {8294085828}
 
 # =====================================================
 # FLASK KEEP ALIVE
@@ -64,19 +64,18 @@ conn.commit()
 # PREMIUM CHECK
 # =====================================================
 
-def is_premium(user_id):
+def is_premium(user_id: int):
     if user_id in FREE_USERS:
         return True
 
     cursor.execute("SELECT expiry_date FROM premium_users WHERE user_id=?", (user_id,))
-    result = cursor.fetchone()
+    row = cursor.fetchone()
 
-    if not result:
+    if not row:
         return False
 
     try:
-        expiry = datetime.strptime(result[0], "%Y-%m-%d %H:%M:%S")
-        return expiry > datetime.now()
+        return datetime.strptime(row[0], "%Y-%m-%d %H:%M:%S") > datetime.now()
     except:
         return False
 
@@ -84,7 +83,7 @@ def is_premium(user_id):
 # ADD PREMIUM
 # =====================================================
 
-def add_premium(user_id):
+def add_premium(user_id: int):
     expiry = datetime.now() + timedelta(days=30)
 
     cursor.execute("""
@@ -102,36 +101,39 @@ def add_premium(user_id):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
 
-    await update.message.reply_text(f"""
-WELCOME {user.first_name}
+    await update.message.reply_text(
+        f"""WELCOME {user.first_name}
 
-CRYPTO BOT
+📊 CRYPTO BOT
 
 COMMANDS:
 /premium
-/verify TX
+/verify TX_HASH
 /myplan
 /myid
 /all
 
-SEND SYMBOL:
+👉 Send symbol like:
 BTCUSDT
 ETHUSDT
-""")
+"""
+    )
 
 # =====================================================
 # MY ID
 # =====================================================
 
 async def myid(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(f"ID: {update.effective_user.id}")
+    await update.message.reply_text(f"Your ID: {update.effective_user.id}")
 
 # =====================================================
 # PREMIUM INFO
 # =====================================================
 
 async def premium(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(f"""
+    await update.message.reply_text(
+        f"""💎 PREMIUM PLAN
+
 PRICE: {MONTHLY_PRICE_SOL} SOL
 
 SEND TO:
@@ -139,51 +141,51 @@ SEND TO:
 
 VERIFY:
 /verify TX_HASH
-""")
+"""
+    )
 
 # =====================================================
-# VERIFY PAYMENT
+# VERIFY PAYMENT (SAFE VERSION)
 # =====================================================
 
 async def verify(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
 
-    if len(context.args) == 0:
-        await update.message.reply_text("USAGE: /verify TX_HASH")
+    if not context.args:
+        await update.message.reply_text("Usage: /verify TX_HASH")
         return
 
     tx_hash = context.args[0]
 
     cursor.execute("SELECT tx_hash FROM used_transactions WHERE tx_hash=?", (tx_hash,))
     if cursor.fetchone():
-        await update.message.reply_text("ALREADY USED")
+        await update.message.reply_text("❌ Already used TX")
         return
 
     try:
         url = f"https://public-api.solscan.io/transaction/{tx_hash}"
-        r = requests.get(url, timeout=20)
+        r = requests.get(url, timeout=15)
 
         if r.status_code != 200:
-            await update.message.reply_text("TX NOT FOUND")
+            await update.message.reply_text("❌ TX not found")
             return
 
         data = r.json()
 
         transfers = data.get("solTransfers", [])
 
-        found = False
-        paid = 0
+        valid = False
+        amount_paid = 0
 
         for t in transfers:
             if t.get("destination") == SOL_WALLET:
-                amount = float(t.get("lamport", 0)) / 1e9
-                if amount >= MONTHLY_PRICE_SOL:
-                    found = True
-                    paid = amount
+                amount_paid = float(t.get("lamport", 0)) / 1e9
+                if amount_paid >= MONTHLY_PRICE_SOL:
+                    valid = True
                     break
 
-        if not found:
-            await update.message.reply_text("INSUFFICIENT PAYMENT")
+        if not valid:
+            await update.message.reply_text("❌ Payment insufficient")
             return
 
         cursor.execute("INSERT INTO used_transactions VALUES (?)", (tx_hash,))
@@ -191,14 +193,14 @@ async def verify(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         expiry = add_premium(user_id)
 
-        await update.message.reply_text(f"""
-PAYMENT VERIFIED
-AMOUNT: {paid} SOL
-EXPIRES: {expiry}
-""")
+        await update.message.reply_text(
+            f"""✅ PAYMENT VERIFIED
+AMOUNT: {amount_paid} SOL
+EXPIRES: {expiry}"""
+        )
 
     except Exception as e:
-        await update.message.reply_text(f"ERROR: {str(e)}")
+        await update.message.reply_text(f"Error: {str(e)}")
 
 # =====================================================
 # MY PLAN
@@ -208,88 +210,92 @@ async def myplan(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
 
     if user_id in FREE_USERS:
-        await update.message.reply_text("FREE PLAN ACTIVE")
+        await update.message.reply_text("🟢 FREE PLAN ACTIVE")
         return
 
     cursor.execute("SELECT expiry_date FROM premium_users WHERE user_id=?", (user_id,))
-    result = cursor.fetchone()
+    row = cursor.fetchone()
 
-    if not result:
-        await update.message.reply_text("NO PLAN")
+    if not row:
+        await update.message.reply_text("❌ No active plan")
         return
 
-    await update.message.reply_text(f"EXPIRES: {result[0]}")
+    await update.message.reply_text(f"📅 Expires: {row[0]}")
 
 # =====================================================
-# PRICE CHECK (SYMBOL)
+# PRICE CHECK
 # =====================================================
 
 async def price(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
 
     if not is_premium(user_id):
-        await update.message.reply_text("PREMIUM REQUIRED")
+        await update.message.reply_text("❌ Premium required")
         return
 
     symbol = update.message.text.upper().strip()
 
     try:
-        r = requests.get(
-            f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}",
-            timeout=10
-        )
-
+        url = f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}"
+        r = requests.get(url, timeout=10)
         data = r.json()
 
-        price = data.get("price")
+        price_val = data.get("price")
 
-        if not price:
-            await update.message.reply_text("INVALID SYMBOL")
+        if not price_val:
+            await update.message.reply_text("❌ Invalid symbol")
             return
 
-        await update.message.reply_text(f"{symbol}: {price} USDT")
+        await update.message.reply_text(f"{symbol}: {price_val} USDT")
 
     except:
-        await update.message.reply_text("API ERROR")
+        await update.message.reply_text("❌ Binance API error")
 
 # =====================================================
-# ALL USDT PAIRS (FULL FIXED VERSION)
+# /ALL FIXED (FAST + SAFE + CACHED STYLE)
 # =====================================================
+
+CACHE = {
+    "data": None,
+    "time": None
+}
 
 async def all_coins(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
 
     if not is_premium(user_id):
-        await update.message.reply_text("PREMIUM REQUIRED")
+        await update.message.reply_text("❌ Premium required")
         return
 
     try:
-        r = requests.get("https://api.binance.com/api/v3/exchangeInfo", timeout=20)
-        data = r.json()
+        now = datetime.now()
 
-        symbols = data.get("symbols", [])
+        # CACHE for 10 minutes (IMPORTANT FIX)
+        if CACHE["data"] and CACHE["time"] and (now - CACHE["time"]).seconds < 600:
+            symbols = CACHE["data"]
+        else:
+            r = requests.get("https://api.binance.com/api/v3/exchangeInfo", timeout=20)
+            data = r.json()
 
-        usdt_pairs = [
-            s["symbol"]
-            for s in symbols
-            if s.get("symbol", "").endswith("USDT") and s.get("status") == "TRADING"
-        ]
+            symbols = [
+                s["symbol"]
+                for s in data.get("symbols", [])
+                if s.get("symbol", "").endswith("USDT") and s.get("status") == "TRADING"
+            ]
 
-        if not usdt_pairs:
-            await update.message.reply_text("NO DATA FOUND")
-            return
+            CACHE["data"] = symbols
+            CACHE["time"] = now
 
-        await update.message.reply_text(f"TOTAL USDT PAIRS: {len(usdt_pairs)}")
+        await update.message.reply_text(f"📊 Total USDT pairs: {len(symbols)}")
 
-        # split into chunks (Telegram limit safe)
-        chunk_size = 70
+        # chunk safe
+        chunk_size = 50
 
-        for i in range(0, len(usdt_pairs), chunk_size):
-            chunk = usdt_pairs[i:i + chunk_size]
-            await update.message.reply_text("\n".join(chunk))
+        for i in range(0, len(symbols), chunk_size):
+            await update.message.reply_text("\n".join(symbols[i:i + chunk_size]))
 
     except Exception as e:
-        await update.message.reply_text(f"ERROR: {str(e)}")
+        await update.message.reply_text(f"Error: {str(e)}")
 
 # =====================================================
 # MAIN
@@ -309,7 +315,7 @@ def main():
     app.add_handler(CommandHandler("myid", myid))
     app.add_handler(CommandHandler("all", all_coins))
 
-    # ONLY VALID SYMBOLS TRIGGER PRICE
+    # symbol handler LAST (important fix)
     app.add_handler(MessageHandler(filters.Regex("^[A-Z0-9]{6,15}$"), price))
 
     print("BOT RUNNING...")
