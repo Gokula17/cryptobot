@@ -24,7 +24,7 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 SOL_WALLET = "3KfYUxGhqNWQYWuP1QeF8ipnGxayqTeuhz3SJ8gw2oYi"
 MONTHLY_PRICE_SOL = 0.10
 
-FREE_USERS = {8294085828}
+FREE_USERS = {8294085828,6000851613}
 
 # =====================================================
 # SESSION
