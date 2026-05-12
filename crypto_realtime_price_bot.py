@@ -2,301 +2,206 @@ import os
 import requests
 import sqlite3
 from datetime import datetime, timedelta
-from flask import Flask
-import threading
 
 from telegram import Update
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
     MessageHandler,
-    filters,
     ContextTypes,
+    filters,
 )
 
-# =====================================================
-# CONFIG
-# =====================================================
+# ================= CONFIG =================
 
-BOT_TOKEN = os.getenv("8435427608:AAFPstc0KQfDWg-MK2DBXb6g_rVVNKwueN4")
-SOL_WALLET = "3KfYUxGhqNWQYWuP1eQF8ipnGxayqTeuhz3SJ8gw2oYi"
-MONTHLY_PRICE_SOL = 0.10
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 
-FREE_USERS = [8294085828]
+FREE_USERS = {8294085828}
 
-# =====================================================
-# FLASK (FOR RENDER KEEP-ALIVE)
-# =====================================================
+# ================= DB =================
 
-web_app = Flask(__name__)
-
-@web_app.route("/")
-def home():
-    return "Bot is running"
-
-def run_web():
-    web_app.run(host="0.0.0.0", port=10000)
-
-threading.Thread(target=run_web).start()
-
-# =====================================================
-# DATABASE
-# =====================================================
-
-conn = sqlite3.connect("premium_users.db", check_same_thread=False)
+conn = sqlite3.connect("bot.db", check_same_thread=False)
 cursor = conn.cursor()
 
 cursor.execute("""
-CREATE TABLE IF NOT EXISTS premium_users (
+CREATE TABLE IF NOT EXISTS premium (
     user_id INTEGER PRIMARY KEY,
-    expiry_date TEXT
-)
-""")
-
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS used_transactions (
-    tx_hash TEXT PRIMARY KEY
+    expiry TEXT
 )
 """)
 
 conn.commit()
 
-# =====================================================
-# PREMIUM CHECK
-# =====================================================
+# ================= PREMIUM CHECK =================
 
 def is_premium(user_id):
     if user_id in FREE_USERS:
         return True
 
-    cursor.execute("SELECT expiry_date FROM premium_users WHERE user_id=?", (user_id,))
-    result = cursor.fetchone()
+    cursor.execute("SELECT expiry FROM premium WHERE user_id=?", (user_id,))
+    row = cursor.fetchone()
 
-    if not result:
+    if not row:
         return False
 
-    expiry = datetime.strptime(result[0], "%Y-%m-%d %H:%M:%S")
-    return expiry > datetime.now()
+    try:
+        return datetime.strptime(row[0], "%Y-%m-%d %H:%M:%S") > datetime.now()
+    except:
+        return False
 
-# =====================================================
-# ADD PREMIUM
-# =====================================================
+# ================= ADD PREMIUM =================
 
 def add_premium(user_id):
     expiry = datetime.now() + timedelta(days=30)
 
     cursor.execute("""
-        INSERT OR REPLACE INTO premium_users (user_id, expiry_date)
+        INSERT OR REPLACE INTO premium (user_id, expiry)
         VALUES (?, ?)
     """, (user_id, expiry.strftime("%Y-%m-%d %H:%M:%S")))
 
     conn.commit()
     return expiry
 
-# =====================================================
-# START
-# =====================================================
+# ================= START =================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
+    await update.message.reply_text("""
+🚀 CRYPTO BOT
 
-    await update.message.reply_text(f"""
-WELCOME {user.first_name}
+Commands:
+/premium
+/myplan
+/all
 
-PREMIUM CRYPTO BOT
-
-COMMANDS:
-/premium → Buy Premium
-/verify → Verify Payment
-/myplan → Check Plan
-/myid → Get ID
-/all → All USDT Coins
-
-SEND SYMBOLS:
+👉 Send:
 BTCUSDT
 ETHUSDT
-SOLUSDT
 """)
 
-# =====================================================
-# MY ID
-# =====================================================
-
-async def myid(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(f"YOUR ID: {update.effective_user.id}")
-
-# =====================================================
-# PREMIUM INFO
-# =====================================================
+# ================= PREMIUM =================
 
 async def premium(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(f"""
-PRICE: {MONTHLY_PRICE_SOL} SOL
+    await update.message.reply_text("""
+💎 PREMIUM PLAN
 
-SEND TO:
-{SOL_WALLET}
-
-AFTER PAYMENT:
-/verify TX_HASH
+30 DAYS ACCESS
+PRICE: 0.10 SOL
+SEND TO WALLET AND VERIFY
 """)
 
-# =====================================================
-# VERIFY PAYMENT
-# =====================================================
-
-async def verify(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-
-    if len(context.args) == 0:
-        await update.message.reply_text("USAGE: /verify TX_HASH")
-        return
-
-    tx_hash = context.args[0]
-
-    cursor.execute("SELECT tx_hash FROM used_transactions WHERE tx_hash=?", (tx_hash,))
-    if cursor.fetchone():
-        await update.message.reply_text("ALREADY USED TRANSACTION")
-        return
-
-    try:
-        url = f"https://public-api.solscan.io/transaction/{tx_hash}"
-        r = requests.get(url, timeout=20)
-
-        if r.status_code != 200:
-            await update.message.reply_text("TRANSACTION NOT FOUND")
-            return
-
-        data = r.json()
-
-        if "blockTime" not in data:
-            await update.message.reply_text("INVALID TRANSACTION")
-            return
-
-        found = False
-        paid = 0
-
-        if "solTransfers" in data:
-            for t in data["solTransfers"]:
-                try:
-                    if t.get("destination") == SOL_WALLET:
-                        lamports = t.get("lamport", 0)
-                        amount = lamports / 1e9
-
-                        if amount >= MONTHLY_PRICE_SOL:
-                            found = True
-                            paid = amount
-                            break
-                except:
-                    pass
-
-        if not found:
-            await update.message.reply_text("INSUFFICIENT PAYMENT")
-            return
-
-        cursor.execute("INSERT INTO used_transactions VALUES (?)", (tx_hash,))
-        conn.commit()
-
-        expiry = add_premium(user_id)
-
-        await update.message.reply_text(f"""
-PAYMENT VERIFIED
-
-AMOUNT: {paid} SOL
-PREMIUM ACTIVE UNTIL:
-{expiry}
-""")
-
-    except Exception as e:
-        await update.message.reply_text(f"ERROR: {e}")
-
-# =====================================================
-# MY PLAN
-# =====================================================
+# ================= MY PLAN =================
 
 async def myplan(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
 
     if user_id in FREE_USERS:
-        await update.message.reply_text("FREE PREMIUM ACTIVE")
+        await update.message.reply_text("🟢 FREE USER")
         return
 
-    cursor.execute("SELECT expiry_date FROM premium_users WHERE user_id=?", (user_id,))
-    result = cursor.fetchone()
+    cursor.execute("SELECT expiry FROM premium WHERE user_id=?", (user_id,))
+    row = cursor.fetchone()
 
-    if not result:
-        await update.message.reply_text("NO ACTIVE PLAN")
+    if not row:
+        await update.message.reply_text("❌ NO PLAN")
         return
 
-    await update.message.reply_text(f"EXPIRES: {result[0]}")
+    await update.message.reply_text(f"📅 EXPIRES: {row[0]}")
 
-# =====================================================
-# PRICE CHECK
-# =====================================================
+# ================= PRICE =================
 
 async def price(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
 
     if not is_premium(user_id):
-        await update.message.reply_text("PREMIUM REQUIRED")
+        await update.message.reply_text("❌ PREMIUM REQUIRED")
         return
 
-    symbol = update.message.text.upper()
+    symbol = update.message.text.upper().strip()
 
     try:
-        url = f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}"
-        r = requests.get(url, timeout=10)
-        data = r.json()
+        r = requests.get(
+            f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}",
+            timeout=10
+        )
 
-        await update.message.reply_text(f"{symbol}: {data.get('price','INVALID')} USDT")
+        data = r.json()
+        price = data.get("price")
+
+        if not price:
+            await update.message.reply_text("❌ INVALID SYMBOL")
+            return
+
+        await update.message.reply_text(f"📊 {symbol} = {price} USDT")
 
     except:
-        await update.message.reply_text("ERROR FETCHING PRICE")
+        await update.message.reply_text("❌ BINANCE ERROR")
 
-# =====================================================
-# ALL COINS
-# =====================================================
+# ================= CACHE FOR /ALL =================
+
+CACHE = {
+    "data": None,
+    "time": None
+}
+
+# ================= /ALL FIXED =================
 
 async def all_coins(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
 
     if not is_premium(user_id):
-        await update.message.reply_text("PREMIUM REQUIRED")
+        await update.message.reply_text("❌ PREMIUM REQUIRED")
         return
 
-    url = "https://api.binance.com/api/v3/exchangeInfo"
-    r = requests.get(url)
-    data = r.json()
+    try:
+        now = datetime.now()
 
-    coins = [s["symbol"] for s in data["symbols"] if s["symbol"].endswith("USDT")]
+        # cache 10 min
+        if CACHE["data"] and CACHE["time"] and (now - CACHE["time"]).seconds < 600:
+            symbols = CACHE["data"]
+        else:
+            r = requests.get("https://api.binance.com/api/v3/exchangeInfo", timeout=20)
+            data = r.json()
 
-    await update.message.reply_text("\n".join(coins[:100]))
+            symbols = [
+                s["symbol"]
+                for s in data.get("symbols", [])
+                if s.get("symbol", "").endswith("USDT")
+                and s.get("status") == "TRADING"
+            ]
 
-# =====================================================
-# MAIN
-# =====================================================
+            CACHE["data"] = symbols
+            CACHE["time"] = now
+
+        await update.message.reply_text(f"📊 TOTAL USDT PAIRS: {len(symbols)}")
+
+        # safe send
+        for i in range(0, len(symbols), 40):
+            await update.message.reply_text("\n".join(symbols[i:i+40]))
+
+    except Exception as e:
+        await update.message.reply_text(f"ERROR: {str(e)}")
+
+# ================= HANDLER =================
 
 def main():
     if not BOT_TOKEN:
-        print("BOT_TOKEN not set in environment")
+        print("BOT TOKEN MISSING")
         return
 
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("premium", premium))
-    app.add_handler(CommandHandler("verify", verify))
     app.add_handler(CommandHandler("myplan", myplan))
-    app.add_handler(CommandHandler("myid", myid))
     app.add_handler(CommandHandler("all", all_coins))
 
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, price))
+    # IMPORTANT: symbol handler last
+    app.add_handler(MessageHandler(filters.Regex("^[A-Z0-9]{6,15}$"), price))
 
     print("BOT RUNNING...")
     app.run_polling()
 
-# =====================================================
-# RUN
-# =====================================================
+# ================= RUN =================
 
 if __name__ == "__main__":
     main()
